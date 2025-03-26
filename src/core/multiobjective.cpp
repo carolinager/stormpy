@@ -18,6 +18,7 @@
 #include "storm/models/sparse/StandardRewardModel.h"
 #include "storm/settings/SettingsManager.h"
 #include "storm/storage/SparseMatrix.h"
+#include "storm/storage/BitVector.h"
 #include "storm/settings/modules/CoreSettings.h"
 #include "storm/utility/Stopwatch.h"
 #include "storm/utility/macros.h"
@@ -27,18 +28,36 @@
 
 
 template <typename ValueType>
-std::tuple<ValueType, ValueType, storm::storage::Scheduler<ValueType>> _checkForRelReach(storm::Environment const& env, storm::models::sparse::Mdp<ValueType> const& model,
-                                                                storm::logic::MultiObjectiveFormula const& formula, bool computeScheduler) {
+std::tuple<ValueType, ValueType, storm::storage::Scheduler<ValueType>> _checkForRelReach(storm::Environment const& env, storm::models::sparse::Mdp<ValueType> & model, uint64_t state,
+                                                                storm::logic::MultiObjectiveFormula const& formula, std::vector<ValueType> weightVector, bool computeScheduler) {
     // This internal check for RelReach requires some cleanup before it makes sense to merge this.
     //    STORM_LOG_ASSERT(model.getInitialStates().getNumberOfSetBits() == 1,
     //                     "Multi-objective Model checking on model with multiple initial states is not supported.");
-    std::vector<ValueType> weightVector = {storm::utility::one<ValueType>(),-storm::utility::one<ValueType>()};
-    // Preprocess the model
+
+    // Preprocess the model and make the passed state the only initial state
+    storm::storage::BitVector oldInit = model.getInitialStates();
+    storm::storage::BitVector newInit(model.getNumberOfStates());
+    newInit.set(state, true);
+    model.setInitialStates(newInit); // this changes the model! but we reset to the old initial states
     auto preprocessorResult = storm::modelchecker::multiobjective::preprocessing::SparseMultiObjectivePreprocessor<storm::models::sparse::Mdp<ValueType>>::preprocess(env, model, formula);
+
     auto checker = storm::modelchecker::multiobjective::StandardMdpPcaaWeightVectorChecker(preprocessorResult);
     checker.check(env, weightVector);
-    ValueType underApprox = checker.getUnderApproximationOfInitialStateResults().at(0) - checker.getOverApproximationOfInitialStateResults().at(1);
-    ValueType overApprox = checker.getOverApproximationOfInitialStateResults().at(0) - checker.getUnderApproximationOfInitialStateResults().at(1);
+    model.setInitialStates(oldInit);
+
+    // currently, the following is not necessary in practice since over and underApprox are the same anyways, but in theory it would not be sound otherwise
+    ValueType underApprox = 0;
+    ValueType overApprox = 0;
+    for (int i = 0; i < weightVector.size(); ++i) {
+        if (weightVector[i] >=0) {
+            underApprox += weightVector[i] * checker.getUnderApproximationOfInitialStateResults().at(i);
+            overApprox += weightVector[i] * checker.getOverApproximationOfInitialStateResults().at(i);
+        } else {
+            underApprox += weightVector[i] * checker.getOverApproximationOfInitialStateResults().at(i);
+            overApprox += weightVector[i] * checker.getUnderApproximationOfInitialStateResults().at(i);
+        }
+    }
+
     if (computeScheduler) {
         return {underApprox, overApprox, checker.computeScheduler()};
     } else {
@@ -48,6 +67,6 @@ std::tuple<ValueType, ValueType, storm::storage::Scheduler<ValueType>> _checkFor
 
 // Define python bindings
 void define_multiobjective(py::module& m) {
-    m.def("compute_rel_reach_helper", &_checkForRelReach<double>, py::arg("env"), py::arg("model"), py::arg("formula"), py::arg("compute_scheduler")=false);
-    m.def("compute_rel_reach_helper_exact", &_checkForRelReach<storm::RationalNumber>, py::arg("env"), py::arg("model"), py::arg("formula"), py::arg("compute_scheduler")=false);
+    m.def("compute_rel_reach_helper", &_checkForRelReach<double>, py::arg("env"), py::arg("model"), py::arg("state"), py::arg("formula"), py::arg("weightVector"), py::arg("compute_scheduler")=false);
+    m.def("compute_rel_reach_helper_exact", &_checkForRelReach<storm::RationalNumber>, py::arg("env"), py::arg("model"), py::arg("state"), py::arg("formula"), py::arg("weightVector"), py::arg("compute_scheduler")=false);
 }
